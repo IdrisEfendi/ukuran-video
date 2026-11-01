@@ -1,0 +1,25 @@
+# Python cache and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Runtime video data
+uploads/
+outputs/
+static/thumbnails/
+history.json
+
+# FFmpeg two-pass artifacts and logs
+*.log
+*.log.*
+
+# Local environment and editor files
+.env
+.env.*
+.vscode/
+.idea/
+*.swp
