@@ -10,13 +10,16 @@ from datetime import datetime
 from flask import Blueprint, request, jsonify, send_file, render_template
 from ffmpeg_utils import (
     get_video_info, calculate_target_bitrate, estimate_min_recommended,
+    recommend_quality,
     CompressionTask, start_compression, cancel_compression, generate_thumbnail,
     format_filesize, format_duration, TASKS, TASKS_LOCK
 )
 
 bp = Blueprint('main', __name__)
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+UPLOAD_DIR = os.environ.get(
+    'UPLOAD_FOLDER', os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
+)
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'outputs')
 THUMBNAIL_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static', 'thumbnails')
 
@@ -375,6 +378,9 @@ def estimate():
         audio_kbps = 0
 
     target_bps = calculate_target_bitrate(target_size_mb, duration, audio_kbps)
+    quality_rec = recommend_quality(info, codec, audio_kbps)
+    quality_bps = quality_rec['quality_bitrate'] if quality_rec else None
+    effective_bps = max(target_bps or 0, quality_bps or 0) or None
     min_rec = estimate_min_recommended(info)
 
     warning = None
@@ -385,16 +391,19 @@ def estimate():
         # jadi jangan tampilkan peringatan "target terlalu kecil" untuk itu.
         original_size_mb = info.get('filesize', 0) / (1024 * 1024)
         keeps_source_quality = original_size_mb > 0 and target_size_mb >= original_size_mb * 0.9
-        if target_bps < min_bitrate * 0.7 and not keeps_source_quality:
-            rec_size = min_rec[min_bitrate_key]['size_mb']
+        if target_bps < min_bitrate and not keeps_source_quality:
+            rec_size = quality_rec['recommended_size_mb'] if quality_rec else min_rec[min_bitrate_key]['size_mb']
             warning = {
-                'message': f'Target ukuran terlalu kecil untuk video ini. Disarankan minimal {rec_size} MB untuk kualitas yang baik.',
+                'message': f'Target terlalu kecil untuk kualitas jernih. Smart akan menjaga bitrate minimal; ukuran realistis sekitar {rec_size} MB.',
                 'recommended_size': rec_size
             }
 
     return jsonify({
-        'target_bitrate': target_bps,
-        'target_bitrate_formatted': f"{target_bps / 1000:.0f} kbps" if target_bps else 'N/A',
+        'target_bitrate': effective_bps,
+        'target_bitrate_formatted': f"{effective_bps / 1000:.0f} kbps" if effective_bps else 'N/A',
+        'requested_bitrate': target_bps,
+        'quality_bitrate': quality_bps,
+        'recommended_size_mb': quality_rec['recommended_size_mb'] if quality_rec else None,
         'warning': warning,
         'min_recommended': min_rec
     })

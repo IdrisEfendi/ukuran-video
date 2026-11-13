@@ -318,8 +318,13 @@ function toggleModeSettings() {
 async function updateEstimate() {
     if (!currentFileId) return;
 
+    const mode = document.querySelector('input[name="mode"]:checked')?.value || 'smart';
     const targetSize = getTargetSizeMB();
-    if (!targetSize) return;
+    if (mode !== 'smart' || !targetSize) {
+        hideElement('estimateInfo');
+        hideElement('warningAlert');
+        return;
+    }
 
     const codec = document.querySelector('input[name="codec"]:checked')?.value || 'h264';
     const audio = document.querySelector('input[name="audio"]:checked')?.value || 'keep';
@@ -341,6 +346,12 @@ async function updateEstimate() {
             showElement('estimateInfo');
         }
 
+        const estimateHint = document.getElementById('estimateHint');
+        if (estimateHint && data.recommended_size_mb) {
+            estimateHint.textContent = `Kualitas aman sekitar ${data.recommended_size_mb} MB untuk video ini. Bitrate otomatis tidak akan dipaksa terlalu rendah.`;
+            estimateHint.classList.remove('hidden');
+        }
+
         if (data.warning) {
             document.getElementById('warningText').textContent = data.warning.message;
             document.getElementById('recommendedSize').textContent = data.warning.recommended_size + ' MB';
@@ -357,8 +368,9 @@ async function startCompression() {
         return;
     }
 
+    const mode = document.querySelector('input[name="mode"]:checked')?.value || 'smart';
     const targetSize = getTargetSizeMB();
-    if (!targetSize) {
+    if (mode === 'smart' && !targetSize) {
         showToast('Pilih target ukuran file', 'error');
         return;
     }
@@ -370,7 +382,6 @@ async function startCompression() {
 
     const codec = document.querySelector('input[name="codec"]:checked')?.value || 'h264';
     const audio = document.querySelector('input[name="audio"]:checked')?.value || 'keep';
-    const mode = document.querySelector('input[name="mode"]:checked')?.value || 'smart';
     const presetIdx = document.getElementById('presetSlider').value;
     const preset = ['ultrafast', 'fast', 'medium', 'slow', 'veryslow'][presetIdx];
     const crf = parseInt(document.getElementById('crfValue').value);
@@ -378,7 +389,7 @@ async function startCompression() {
 
     const payload = {
         file_id: currentFileId,
-        target_size_mb: targetSize,
+        target_size_mb: mode === 'smart' ? targetSize : null,
         codec,
         preset,
         mode,
@@ -651,6 +662,7 @@ function setupNewCompression() {
         hideElement('resultSection');
         hideElement('comparisonSection');
         hideElement('estimateInfo');
+        hideElement('estimateHint');
         hideElement('warningAlert');
         document.getElementById('fileInput').value = '';
         setStep(0);

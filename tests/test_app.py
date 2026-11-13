@@ -6,7 +6,7 @@ import pytest
 
 import routes.main as main
 from app import app
-from ffmpeg_utils import CompressionTask, _notify_status, get_video_info
+from ffmpeg_utils import CompressionTask, _notify_status, get_video_info, recommend_quality
 
 
 @pytest.fixture()
@@ -44,6 +44,17 @@ def test_status_callback_supports_error_and_cancelled():
     _notify_status(task, 'error')
     _notify_status(task, 'cancelled')
     assert statuses == ['error', 'cancelled']
+
+
+def test_quality_recommendation_scales_with_resolution_and_fps():
+    base = {'duration': 60, 'width': 1280, 'height': 720, 'fps': 30,
+            'video_bitrate': 8_000_000, 'audio_bitrate': 128_000, 'audio_codec': 'aac'}
+    hd = recommend_quality(base, 'h264', 128)
+    full_hd = recommend_quality({**base, 'width': 1920, 'height': 1080, 'fps': 60}, 'h264', 128)
+    hevc = recommend_quality({**base, 'width': 1920, 'height': 1080}, 'h265', 128)
+    assert full_hd['quality_bitrate'] > hd['quality_bitrate']
+    assert hevc['quality_bitrate'] < full_hd['quality_bitrate']
+    assert hd['recommended_size_mb'] > 1
 
 
 def test_cleanup_protects_history_files(tmp_path, monkeypatch):

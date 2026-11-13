@@ -60,7 +60,7 @@ def get_video_info(filepath):
             continue
         if stream.get('codec_type') == 'video':
             video_stream = stream
-        elif stream['codec_type'] == 'audio':
+        elif stream.get('codec_type') == 'audio':
             audio_stream = stream
 
     if video_stream:
@@ -104,6 +104,46 @@ def calculate_target_bitrate(target_size_mb, duration_sec, audio_kbps=128):
     return int(video_bits / duration_sec)
 
 
+def recommend_quality(info, codec='h264', audio_kbps=128):
+    """Return a practical quality floor and size recommendation for a video."""
+    if not info or info.get('duration', 0) <= 0:
+        return None
+
+    width = max(1, int(info.get('width', 0) or 1))
+    height = max(1, int(info.get('height', 0) or 1))
+    pixels = width * height
+    long_edge = max(width, height)
+    fps = max(24.0, min(float(info.get('fps', 30) or 30), 60.0))
+    fps_factor = math.sqrt(fps / 30.0)
+
+    # Practical VBR floors for normal camera/screen content. HEVC needs less.
+    if long_edge <= 854:
+        base_kbps = 1400 if codec == 'h264' else 900
+    elif long_edge <= 1280:
+        base_kbps = 2200 if codec == 'h264' else 1400
+    elif long_edge <= 1920:
+        base_kbps = 4200 if codec == 'h264' else 2700
+    elif long_edge <= 2560:
+        base_kbps = 7000 if codec == 'h264' else 4500
+    else:
+        base_kbps = 11000 if codec == 'h264' else 7000
+
+    # Very small or very large aspect ratios should not distort the profile.
+    pixel_factor = min(1.25, max(0.8, math.sqrt(pixels / (1280 * 720))))
+    quality_kbps = int(base_kbps * fps_factor * pixel_factor)
+    source_video_kbps = (info.get('video_bitrate', 0) or info.get('bitrate', 0)) / 1000
+    if source_video_kbps > 0:
+        quality_kbps = min(quality_kbps, max(quality_kbps * 0.75, source_video_kbps * 0.9))
+
+    audio_kbps = max(0, float(audio_kbps or 0))
+    recommended_size_mb = ((quality_kbps + audio_kbps) * 1000 * info['duration']) / (8 * 1024 * 1024)
+    return {
+        'quality_bitrate': quality_kbps * 1000,
+        'recommended_size_mb': round(max(1, recommended_size_mb * 1.03), 1),
+        'min_bitrate': int(quality_kbps * 0.75 * 1000),
+    }
+
+
 def estimate_min_recommended(info):
     if not info or info.get('duration', 0) <= 0:
         return None
@@ -112,29 +152,21 @@ def estimate_min_recommended(info):
     height = info.get('height', 0)
     fps = info.get('fps', 30)
 
-    pixels = width * height
-    ref_pixels = 1280 * 720
-    quality_factor = max(0.5, pixels / ref_pixels) if pixels > 0 and ref_pixels > 0 else 1.0
-    fps_factor = fps / 30.0 if fps > 0 else 1.0
-
-    min_bitrate_h264 = int(1.5 * 1000 * 1000 * quality_factor * fps_factor)
-    min_bitrate_h265 = int(1.0 * 1000 * 1000 * quality_factor * fps_factor)
-
     audio_kbps = 128
     if info.get('audio_codec') != 'none' and info.get('audio_bitrate', 0) > 0:
         audio_kbps = info['audio_bitrate'] / 1000
 
-    min_size_h264_mb = ((min_bitrate_h264 + audio_kbps * 1000) * duration) / (8 * 1024 * 1024)
-    min_size_h265_mb = ((min_bitrate_h265 + audio_kbps * 1000) * duration) / (8 * 1024 * 1024)
+    h264 = recommend_quality(info, 'h264', audio_kbps)
+    h265 = recommend_quality(info, 'h265', audio_kbps)
 
     return {
         'h264': {
-            'bitrate': min_bitrate_h264,
-            'size_mb': math.ceil(min_size_h264_mb)
+            'bitrate': h264['min_bitrate'],
+            'size_mb': math.ceil(h264['recommended_size_mb'])
         },
         'h265': {
-            'bitrate': min_bitrate_h265,
-            'size_mb': math.ceil(min_size_h265_mb)
+            'bitrate': h265['min_bitrate'],
+            'size_mb': math.ceil(h265['recommended_size_mb'])
         }
     }
 
@@ -232,6 +264,9 @@ def _do_compression(task):
         else:
             audio_kbps = 0
         target_bps = calculate_target_bitrate(target_size_mb, duration, audio_kbps)
+        quality_rec = recommend_quality(info, codec, audio_kbps)
+        if quality_rec:
+            target_bps = max(target_bps or 0, quality_rec['quality_bitrate'])
         if target_bps and target_bps > 0:
             video_base.extend(['-b:v', str(target_bps)])
             use_two_pass = True
@@ -282,6 +317,7 @@ def _do_compression(task):
         cmd.extend(video_base + audio_opts + common_opts + [output_path])
         _run_ffmpeg(cmd, task, duration, 1)
 
+    notify_error = False
     with TASKS_LOCK:
         if task.status == 'processing':
             if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
@@ -293,7 +329,9 @@ def _do_compression(task):
             else:
                 task.status = 'error'
                 task.error = 'Output file not found or empty'
-                _notify_status(task, 'error')
+                notify_error = True
+    if notify_error:
+        _notify_status(task, 'error')
 
 
 def _cleanup_passlog(prefix):
@@ -336,10 +374,11 @@ def _run_ffmpeg(cmd, task, total_duration, pass_num):
         if not line:
             continue
 
+        if task.cancelled:
+            _kill_process(task)
+            break
+
         with TASKS_LOCK:
-            if task.cancelled:
-                _kill_process(task)
-                break
             task.ffmpeg_log.append(line)
 
         time_match = time_pattern.search(line)
@@ -388,6 +427,7 @@ def _run_ffmpeg(cmd, task, total_duration, pass_num):
 
     task.process.wait()
 
+    error_message = None
     with TASKS_LOCK:
         if task.cancelled:
             return
@@ -395,7 +435,9 @@ def _run_ffmpeg(cmd, task, total_duration, pass_num):
             last_lines = '\n'.join(task.ffmpeg_log[-20:])
             task.status = 'error'
             task.error = f'FFmpeg gagal (kode {task.process.returncode}).\n{last_lines}'
-            _notify_status(task, 'error')
+            error_message = task.error
+    if error_message:
+        _notify_status(task, 'error')
 
 
 def _kill_process(task):
@@ -419,8 +461,11 @@ def cancel_compression(task_id):
         task = TASKS.get(task_id)
         if task and task.status == 'processing':
             task.cancelled = True
-            _kill_process(task)
-            return True
+        else:
+            task = None
+    if task:
+        _kill_process(task)
+        return True
     return False
 
 

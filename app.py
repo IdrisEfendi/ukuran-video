@@ -3,7 +3,9 @@ import os
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024 * 1024
-app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(__file__), 'uploads')
+app.config['UPLOAD_FOLDER'] = os.environ.get(
+    'UPLOAD_FOLDER', os.path.join(os.path.dirname(__file__), 'uploads')
+)
 
 from routes.main import bp
 app.register_blueprint(bp)
